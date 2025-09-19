@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Textured Blocks ✅</title>
+  <link rel="icon" href="data:,">
+  <style>
+    body { margin:0; background:#222; }
+    canvas { display:block; image-rendering: pixelated; }
+
+    /* Debug badge so you KNOW you’re on the right file */
+    #buildTag {
+      position:fixed; top:8px; left:8px; z-index:9999;
+      background:#1f3; color:#061; font:12px ui-monospace,monospace;
+      padding:6px 8px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.4);
+    }
+
+    #instructions {
+      position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+      color:#fff; font:18px system-ui; background:rgba(0,0,0,.6);
+      padding:12px 18px; border-radius:8px; text-align:center; user-select:none; cursor:pointer;
+    }
+    #crosshair {
+      position:fixed; left:50%; top:50%; width:20px; height:20px;
+      transform:translate(-50%,-50%); pointer-events:none; opacity:.9; display:none;
+    }
+    #crosshair::before, #crosshair::after {
+      content:""; position:absolute; left:50%; top:50%; background:#fff;
+      transform:translate(-50%,-50%); border-radius:1px;
+    }
+    #crosshair::before { width:2px; height:16px; }
+    #crosshair::after  { width:16px; height:2px; }
+
+    /* Hotbar + thumbnails + toast */
+    #hotbarWrap { position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+      display:grid; gap:10px; justify-items:center; pointer-events:none; }
+    #hotbar { display:flex; gap:8px; padding:8px; background:rgba(0,0,0,.35);
+      border-radius:12px; backdrop-filter:blur(2px); color:#eee; font:12px system-ui; }
+    .slot { width:56px; height:56px; border-radius:8px; position:relative;
+      background:rgba(255,255,255,.06); outline:2px solid rgba(255,255,255,.15);
+      display:grid; place-items:center; }
+    .slot.selected { outline:3px solid #ffd34d; box-shadow:0 0 0 2px rgba(0,0,0,.6) inset; }
+    .slot .num { position:absolute; top:4px; left:6px; opacity:.8; font-weight:600;
+      text-shadow:0 1px 2px rgba(0,0,0,.6); }
+    .thumb { width:40px; height:40px; border-radius:6px; box-shadow:0 2px 4px rgba(0,0,0,.35);
+      border:1px solid rgba(0,0,0,.35); image-rendering: pixelated; background-size:cover; }
+    #selectionToast { pointer-events:none; color:#fff; font:16px system-ui; font-weight:700;
+      text-shadow:0 2px 6px rgba(0,0,0,.7); opacity:0; transition:opacity .2s ease; }
+    #selectionToast.show { opacity:1; }
+  </style>
+</head>
+<body>
+  <div id="buildTag">TEXTURES BUILD</div>
+
+  <div id="instructions">Click to play<br>
+    WASD = Move • Space = Jump • Double-tap W = Sprint<br>
+    Hold Left-click = Place • Right-click = Remove<br>
+    1–5 / Scroll = Change block
+  </div>
+  <div id="crosshair"></div>
+
+  <!-- Hotbar + selection toast -->
+  <div id="hotbarWrap">
+    <div id="selectionToast"></div>
+    <div id="hotbar">
+      <div class="slot selected" data-type="grass"><span class="num">1</span><div class="thumb" id="thumb-grass"></div></div>
+      <div class="slot" data-type="stone"><span class="num">2</span><div class="thumb" id="thumb-stone"></div></div>
+      <div class="slot" data-type="wood"><span class="num">3</span><div class="thumb" id="thumb-wood"></div></div>
+      <div class="slot" data-type="glass"><span class="num">4</span><div class="thumb" id="thumb-glass"></div></div>
+      <div class="slot" data-type="glow"><span class="num">5</span><div class="thumb" id="thumb-glow"></div></div>
+    </div>
+  </div>
+
+  <!-- Use unpkg (reliable) -->
+  <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+  <script>
+    // ---------- Scene / Camera / Renderer ----------
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setClearColor(0x87ceeb); // sky blue
+    document.body.appendChild(renderer.domElement);
+
+    // ---------- Ground + Grid ----------
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(200,200),
+      new THREE.MeshStandardMaterial({ color: 0x2c2c2c, roughness: 1 })
+    );
+    ground.rotation.x = -Math.PI/2;
+    ground.userData.isGround = true;
+    scene.add(ground);
+    scene.add(new THREE.GridHelper(200,200, 0x555555, 0x333333));
+
+    // ---------- Lighting ----------
+    scene.add(new THREE.AmbientLight(0xffffff,0.45));
+    const dir = new THREE.DirectionalLight(0xffffff,0.8);
+    dir.position.set(5,10,5);
+    scene.add(dir);
+
+    // ---------- Runtime pixel textures ----------
+    function makeCanvas(w=32, h=32) {
+      const c = document.createElement('canvas'); c.width = w; c.height = h; return c;
+    }
+    function toTexture(canvas) {
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestMipMapNearestFilter;
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      return tex;
+    }
+    function makeGrassTop() {
+      const c = makeCanvas(), g = c.getContext('2d');
+      for (let y=0;y<c.height;y++) for (let x=0;x<c.width;x++){
+        const base = 0x56 + ((x+y)&1)*10;
+        g.fillStyle = `rgb(${base-20},${base+80},${base-20})`;
+        g.fillRect(x,y,1,1);
+      }
+      return toTexture(c);
+    }
+    function makeDirt() {
+      const c = makeCanvas(), g = c.getContext('2d');
+      g.fillStyle = '#6b4a2a'; g.fillRect(0,0,c.width,c.height);
+      for (let i=0;i<120;i++){
+        g.fillStyle = `rgba(255,255,255,${Math.random()*0.1})`; g.fillRect(Math.random()*c.width,Math.random()*c.height,1,1);
+        g.fillStyle = `rgba(0,0,0,${Math.random()*0.15})`;     g.fillRect(Math.random()*c.width,Math.random()*c.height,1,1);
+      }
+      return toTexture(c);
+    }
+    function makeGrassSide() {
+      const c = makeCanvas(), g = c.getContext('2d');
+      g.fillStyle = '#6b4a2a'; g.fillRect(0,0,c.width,c.height);
+      for (let i=0;i<100;i++){
+        g.fillStyle = `rgba(255,255,255,${Math.random()*0.08})`; g.fillRect(Math.random()*c.width,Math.random()*c.height,1,1);
+        g.fillStyle = `rgba(0,0,0,${Math.random()*0.12})`;       g.fillRect(Math.random()*c.width,Math.random()*c.height,1,1);
+      }
+      const trim = 8;
+      for (let y=0;y<trim;y++) for (let x=0;x<c.width;x++){
+        const jitter = ((x^y)&1)?6:0, green = 120 + Math.floor(Math.random()*30);
+        g.fillStyle = `rgb(${40+jitter},${green},${40})`; g.fillRect(x,y,1,1);
+      }
+      return toTexture(c);
+    }
+    function makeStone() {
+      const c = makeCanvas(), g = c.getContext('2d');
+      for (let y=0;y<c.height;y++) for (let x=0;x<c.width;x++){
+        const n = 120 + ((Math.sin(x*3.1)+Math.cos(y*2.7))*8) + (Math.random()*16-8);
+        g.fillStyle = `rgb(${n},${n},${n})`; g.fillRect(x,y,1,1);
+      }
+      return toTexture(c);
+    }
+    function makeWood() {
+      const c = makeCanvas(), g = c.getContext('2d');
+      const grad = g.createLinearGradient(0,0,c.width,0);
+      grad.addColorStop(0,'#7a4a21'); grad.addColorStop(1,'#8f5c2c');
+      g.fillStyle = grad; g.fillRect(0,0,c.width,c.height);
+      for (let y=0;y<c.height;y++){
+        const stripe = (Math.sin(y*0.5)*3)|0;
+        if ((stripe&1)) { g.fillStyle = 'rgba(0,0,0,0.08)'; g.fillRect(0,y,c.width,1); }
+      }
+      g.fillStyle = 'rgba(0,0,0,0.35)';
+      for (let x=0;x<c.width;x+=8) g.fillRect(x,0,1,c.height);
+      return toTexture(c);
+    }
+    function makeGlass() {
+      const c = makeCanvas(), g = c.getContext('2d');
+      g.clearRect(0,0,c.width,c.height);
+      g.fillStyle = 'rgba(153,217,234,0.18)'; g.fillRect(0,0,c.width,c.height);
+      g.strokeStyle = 'rgba(153,217,234,0.55)'; g.lineWidth = 2; g.strokeRect(2,2,c.width-4,c.height-4);
+      return toTexture(c);
+    }
+    function makeGlow() {
+      const c = makeCanvas(), g = c.getContext('2d');
+      g.fillStyle = '#fff38a'; g.fillRect(0,0,c.width,c.height);
+      g.fillStyle = 'rgba(255,220,120,0.7)'; g.fillRect(4,4,c.width-8,c.height-8);
+      return toTexture(c);
+    }
+    const TEX = {
+      grassTop: makeGrassTop(), grassSide: makeGrassSide(), dirt: makeDirt(),
+      stone: makeStone(), wood: makeWood(), glass: makeGlass(), glow: makeGlow()
+    };
+
+    // Hotbar thumbnails from textures
+    function setThumb(id, tex){ try{ document.getElementById(id).style.backgroundImage = `url(${tex.image.toDataURL()})`; }catch{} }
+    setThumb('thumb-grass', TEX.grassTop);
+    setThumb('thumb-stone', TEX.stone);
+    setThumb('thumb-wood',  TEX.wood);
+    setThumb('thumb-glass', TEX.glass);
+    setThumb('thumb-glow',  TEX.glow);
+
+    // ---------- Materials ----------
+    const geoBox = new THREE.BoxGeometry(1,1,1);
+    function matGrass(){
+      const top =    new THREE.MeshStandardMaterial({ map:TEX.grassTop,  roughness:1, metalness:0 });
+      const bottom = new THREE.MeshStandardMaterial({ map:TEX.dirt,      roughness:1, metalness:0 });
+      const side =   new THREE.MeshStandardMaterial({ map:TEX.grassSide, roughness:1, metalness:0 });
+      // Order for BoxGeometry groups: +x, -x, +y, -y, +z, -z
+      return [side, side, top, bottom, side, side];
+    }
+    const MAT = {
+      grass: matGrass(),
+      stone: new THREE.MeshStandardMaterial({ map:TEX.stone, roughness:.9, metalness:.1 }),
+      wood:  new THREE.MeshStandardMaterial({ map:TEX.wood,  roughness:1,  metalness:0 }),
+      glass: new THREE.MeshStandardMaterial({ map:TEX.glass, transparent:true, opacity:.5, roughness:.1, metalness:.05 }),
+      glow:  new THREE.MeshStandardMaterial({ map:TEX.glow,  color:0xfff38a, emissive:0xffe45a, emissiveIntensity:.85, roughness:.4, metalness:.1 })
+    };
+
+    // ---------- Player / Controls ----------
+    const playerHeight = 1.7, playerRadius = 0.35;
+    camera.position.set(0, playerHeight, 6);
+
+    const instructions = document.getElementById('instructions');
+    const crosshair = document.getElementById('crosshair');
+
+    instructions.addEventListener('click', () => document.body.requestPointerLock());
+    document.addEventListener('pointerlockchange', () => {
+      const locked = document.pointerLockElement === document.body;
+      instructions.style.display = locked ? 'none' : 'block';
+      crosshair.style.display    = locked ? 'block' : 'none';
+      if (locked) document.addEventListener('mousemove', onMouseMove);
+      else        document.removeEventListener('mousemove', onMouseMove);
+    });
+
+    let yaw=0, pitch=0; const PITCH_LIMIT=Math.PI/2-0.01, sensitivity=0.0025;
+    camera.rotation.order='YXZ';
+    function onMouseMove(e){ yaw-=e.movementX*sensitivity; pitch-=e.movementY*sensitivity; pitch=Math.max(-PITCH_LIMIT,Math.min(PITCH_LIMIT,pitch)); camera.rotation.y=yaw; camera.rotation.x=pitch; }
+
+    const keys={ w:false,a:false,s:false,d:false,space:false,shift:false };
+    window.addEventListener('keydown', e => {
+      if(e.key===' ') keys.space=true; else if(e.key in keys) keys[e.key]=true;
+      if(e.key>='1'&&e.key<='5') selectSlot(parseInt(e.key,10)-1);
+    });
+    window.addEventListener('keyup',   e => {
+      if(e.key===' ') keys.space=false; else if(e.key in keys) keys[e.key]=false;
+    });
+
+    let sprinting=false, lastWtime=0;
+    window.addEventListener('keydown', e => {
+      if(e.key==='w'||e.key==='W'){ const now=performance.now(); if(now-lastWtime<250) sprinting=true; lastWtime=now; }
+    });
+    window.addEventListener('keyup',   e => { if(e.key==='w'||e.key==='W') sprinting=false; });
+
+    // Hotbar state
+    const TYPES=['grass','stone','wood','glass','glow']; let selectedIndex=0;
+    const hotbar=document.getElementById('hotbar'); const slots=[...hotbar.querySelectorAll('.slot')];
+    const toast=document.getElementById('selectionToast'); let toastTimeout=null;
+    function displayNameFor(t){ return {grass:'Grass Block', stone:'Stone', wood:'Wood Planks', glass:'Glass', glow:'Glow Block'}[t]||t; }
+    function currentType(){ return TYPES[selectedIndex]; }
+    function refreshHotbarUI(){ slots.forEach((el,i)=> el.classList.toggle('selected', i===selectedIndex)); }
+    function showSelectionToast(t){ toast.textContent=displayNameFor(t); toast.classList.add('show'); if(toastTimeout)clearTimeout(toastTimeout); toastTimeout=setTimeout(()=>toast.classList.remove('show'),1600); }
+    function selectSlot(i){ const prev=selectedIndex; selectedIndex=(i+TYPES.length)%TYPES.length; if(selectedIndex!==prev){ refreshHotbarUI(); showSelectionToast(currentType()); } }
+    function cycleSlot(d){ selectSlot(selectedIndex + (d>0?1:-1)); }
+    window.addEventListener('wheel', e => cycleSlot(Math.sign(e.deltaY)), {passive:true});
+    refreshHotbarUI(); showSelectionToast(currentType());
+
+    // ---------- Build / Break ----------
+    const raycaster=new THREE.Raycaster(), mouse=new THREE.Vector2(0,0);
+    const blocks=new Map(); const keyFor=(x,y,z)=>`${x},${y},${z}`;
+    const MAX_PLACE_DIST=5;
+
+    function addBlockAt(x,y,z,type='grass'){
+      const k=keyFor(x,y,z); if(blocks.has(k)) return;
+      let mesh;
+      if(type==='grass') mesh=new THREE.Mesh(geoBox, MAT.grass);
+      else if(type==='stone') mesh=new THREE.Mesh(geoBox, MAT.stone);
+      else if(type==='wood') mesh=new THREE.Mesh(geoBox, MAT.wood);
+      else if(type==='glass') mesh=new THREE.Mesh(geoBox, MAT.glass);
+      else if(type==='glow') mesh=new THREE.Mesh(geoBox, MAT.glow);
+      else mesh=new THREE.Mesh(geoBox, new THREE.MeshNormalMaterial());
+      mesh.position.set(x,y,z); scene.add(mesh);
+      // Outline for readability
+      const edges=new THREE.EdgesGeometry(geoBox);
+      mesh.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({color:0x000000})));
+      blocks.set(k,{mesh,pos:new THREE.Vector3(x,y,z),type});
+    }
+    function removeBlockAt(x,y,z){
+      const k=keyFor(x,y,z); const b=blocks.get(k); if(!b)return;
+      scene.remove(b.mesh);
+      blocks.delete(k);
+    }
+
+    // Starter block
+    addBlockAt(0, 0.5, -4, 'grass');
+
+    // Right-click to remove (prevent context menu)
+    window.addEventListener('contextmenu', e=>e.preventDefault());
+
+    // Hold-to-place + cooldown
+    let mouseDownLeft=false, lastPlaceTime=0; const PLACE_INTERVAL_MS=120;
+    window.addEventListener('mousedown', e=>{
+      if(document.pointerLockElement!==document.body) return;
+      if(e.button===0){ mouseDownLeft=true; tryPlaceBlock(); }
+      else if(e.button===2){ tryRemoveBlockOnce(); }
+    });
+    window.addEventListener('mouseup',   e=>{ if(e.button===0) mouseDownLeft=false; });
+
+    function tryRemoveBlockOnce(){
+      raycaster.setFromCamera(mouse,camera); raycaster.far=MAX_PLACE_DIST;
+      const targets=[ground, ...[...blocks.values()].map(v=>v.mesh)];
+      const hits=raycaster.intersectObjects(targets,false); if(!hits.length) return;
+      const hit=hits[0]; if(!hit.object.userData.isGround){ const p=hit.object.position; removeBlockAt(p.x,p.y,p.z); }
+    }
+    function getPlacementTarget(){
+      raycaster.setFromCamera(mouse,camera); raycaster.far=MAX_PLACE_DIST;
+      const targets=[ground, ...[...blocks.values()].map(v=>v.mesh)];
+      const hits=raycaster.intersectObjects(targets,false);
+      if(hits.length>0){
+        const hit=hits[0];
+        if(hit.object.userData.isGround){
+          return { pos:new THREE.Vector3(Math.round(hit.point.x),0.5,Math.round(hit.point.z)) };
+        } else {
+          const n=hit.face.normal.clone().transformDirection(hit.object.matrixWorld).round();
+          return { pos:hit.object.position.clone().add(n) };
+        }
+      }
+      return null;
+    }
+    function tryPlaceBlock(){
+      const now=performance.now(); if(now-lastPlaceTime<PLACE_INTERVAL_MS) return; lastPlaceTime=now;
+      const target=getPlacementTarget(); if(!target) return;
+      const placePos=target.pos;
+      // Avoid placing inside player's feet
+      const feetY=camera.position.y - playerHeight;
+      const wouldOverlapFeet =
+        Math.abs(placePos.x - camera.position.x) < (0.5 + playerRadius) &&
+        Math.abs(placePos.z - camera.position.z) < (0.5 + playerRadius) &&
+        feetY > (placePos.y - 0.5 - 0.05) && feetY < (placePos.y + 0.5 - 0.05);
+      const k=keyFor(placePos.x,placePos.y,placePos.z);
+      if(!blocks.has(k) && !wouldOverlapFeet) addBlockAt(placePos.x,placePos.y,placePos.z, currentType());
+    }
+
+    // ---------- Collisions ----------
+    function sideCollidesXZ(x,z,feetY){
+      const EPS=0.02;
+      for(const {pos} of blocks.values()){
+        const bottom=pos.y-0.5, top=pos.y+0.5;
+        const feetInsideY = (feetY > (bottom - EPS)) && (feetY < (top - EPS));
+        if(!feetInsideY) continue;
+        const dx=Math.abs(x-pos.x), dz=Math.abs(z-pos.z);
+        if(dx < (0.5+playerRadius) && dz < (0.5+playerRadius)) return true;
+      }
+      return false;
+    }
+    function landingCheck(prevFeetY,newFeetY,x,z){
+      if(newFeetY>prevFeetY) return null;
+      let landedTop=null;
+      for(const {pos} of blocks.values()){
+        const top=pos.y+0.5;
+        const dx=Math.abs(x-pos.x), dz=Math.abs(z-pos.z);
+        const over=(dx<(0.5+playerRadius))&&(dz<(0.5+playerRadius));
+        if(!over) continue;
+        if(prevFeetY>=top && newFeetY<=top){ if(landedTop===null||top>landedTop) landedTop=top; }
+      }
+      return landedTop;
+    }
+
+    // ---------- Physics ----------
+    const clock=new THREE.Clock(); let velY=0; const gravity=-12, jumpSpeed=5.5; let onGround=true;
+    function movePlayer(dt){
+      let speed=4; if(keys.shift) speed=2; if(sprinting) speed=8;
+
+      const forward=new THREE.Vector3(); camera.getWorldDirection(forward); forward.y=0; if(forward.lengthSq()>0) forward.normalize();
+      const right=new THREE.Vector3().crossVectors(forward,new THREE.Vector3(0,1,0)).normalize();
+
+      const move=new THREE.Vector3(); if(keys.w) move.add(forward); if(keys.s) move.sub(forward); if(keys.d) move.add(right); if(keys.a) move.sub(right);
+      if(move.lengthSq()>0) move.normalize().multiplyScalar(speed*dt);
+
+      const feetY=camera.position.y - playerHeight;
+
+      let tryX=camera.position.x + move.x; if(!sideCollidesXZ(tryX,camera.position.z,feetY)) camera.position.x=tryX;
+      let tryZ=camera.position.z + move.z; if(!sideCollidesXZ(camera.position.x,tryZ,feetY)) camera.position.z=tryZ;
+
+      const prevFeetY=camera.position.y - playerHeight;
+      if(keys.space && onGround){ velY=jumpSpeed; onGround=false; }
+      velY += gravity*dt; camera.position.y += velY*dt;
+
+      let curFeetY=camera.position.y - playerHeight;
+      if(curFeetY < 0){ camera.position.y=playerHeight; velY=0; onGround=true; curFeetY=0; }
+
+      const top=landingCheck(prevFeetY,curFeetY,camera.position.x,camera.position.z);
+      if(top!==null){ camera.position.y=playerHeight+top; velY=0; onGround=true; }
+      else if(velY!==0){ onGround=false; }
+    }
+
+    // ---------- Animate ----------
+    function animate(){
+      requestAnimationFrame(animate);
+      const dt=clock.getDelta();
+      movePlayer(dt);
+      if(mouseDownLeft && document.pointerLockElement===document.body) tryPlaceBlock();
+      renderer.render(scene,camera);
+    }
+    animate();
+
+    // ---------- Resize ----------
+    window.addEventListener('resize', ()=>{
+      camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight);
+    });
+  </script>
+</body>
+</html>
